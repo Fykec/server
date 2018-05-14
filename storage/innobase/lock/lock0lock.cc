@@ -4628,28 +4628,25 @@ lock_print_info_summary(
 	will violate the latching order and two because we are merely querying
 	the state of the variable for display. */
 
-	switch (purge_sys.state){
-	case PURGE_STATE_INIT:
+	switch (purge_sys.state()) {
+	case purge_sys_t::INIT:
 		/* Should never be in this state while the system is running. */
 		ut_error;
 
-	case PURGE_STATE_EXIT:
+	case purge_sys_t::EXIT:
 		fprintf(file, "exited");
 		break;
 
-	case PURGE_STATE_DISABLED:
+	case purge_sys_t::DISABLED:
 		fprintf(file, "disabled");
 		break;
 
-	case PURGE_STATE_RUN:
-		fprintf(file, "running");
-		/* Check if it is waiting for more data to arrive. */
-		if (!purge_sys.running) {
-			fprintf(file, " but idle");
-		}
+	case purge_sys_t::RUN:
+		fprintf(file,
+			purge_sys.running() ? "running" : "running but idle");
 		break;
 
-	case PURGE_STATE_STOP:
+	case purge_sys_t::STOP:
 		fprintf(file, "stopped");
 		break;
 	}

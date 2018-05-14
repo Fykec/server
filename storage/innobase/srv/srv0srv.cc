@@ -1896,17 +1896,16 @@ srv_get_active_thread_type(void)
 
 	srv_sys_mutex_exit();
 
-	if (ret == SRV_NONE && srv_shutdown_state != SRV_SHUTDOWN_NONE
-	    && purge_sys.is_initialised()) {
+	if (ret == SRV_NONE && srv_shutdown_state != SRV_SHUTDOWN_NONE) {
 		/* Check only on shutdown. */
-		switch (trx_purge_state()) {
-		case PURGE_STATE_RUN:
-		case PURGE_STATE_STOP:
+		switch (purge_sys.state()) {
+		case purge_sys_t::RUN:
+		case purge_sys_t::STOP:
 			ret = SRV_PURGE;
 			break;
-		case PURGE_STATE_INIT:
-		case PURGE_STATE_DISABLED:
-		case PURGE_STATE_EXIT:
+		case purge_sys_t::INIT:
+		case purge_sys_t::DISABLED:
+		case purge_sys_t::EXIT:
 			break;
 		}
 	}
@@ -1947,7 +1946,7 @@ srv_wake_purge_thread_if_not_active()
 {
 	ut_ad(!srv_sys_mutex_own());
 
-	if (purge_sys.state == PURGE_STATE_RUN
+	if (purge_sys.state() == purge_sys_t::RUN
 	    && !my_atomic_loadlint(&srv_sys.n_threads_active[SRV_PURGE])
 	    && trx_sys.history_size()) {
 
@@ -2497,16 +2496,12 @@ DECLARE_THREAD(srv_worker_thread)(
 
 		/* Note: we are checking the state without holding the
 		purge_sys.latch here. */
-	} while (purge_sys.state != PURGE_STATE_EXIT);
+	} while (purge_sys.state() != purge_sys_t::EXIT);
 
 	srv_free_slot(slot);
 
-	rw_lock_x_lock(&purge_sys.latch);
-
-	ut_a(!purge_sys.running);
-	ut_a(purge_sys.state == PURGE_STATE_EXIT);
-
-	rw_lock_x_unlock(&purge_sys.latch);
+	ut_a(!purge_sys.running());
+	ut_a(purge_sys.state() == purge_sys_t::EXIT);
 
 #ifdef UNIV_DEBUG_THREAD_CREATION
 	ib::info() << "Purge worker thread exiting, id "
@@ -2605,7 +2600,7 @@ srv_do_purge(ulint* n_total_purged)
 			continue;
 		}
 	} while (n_pages_purged > 0
-		 && purge_sys.state == PURGE_STATE_RUN
+		 && purge_sys.state() == purge_sys_t::RUN
 		 && !srv_purge_should_exit());
 
 	return(rseg_history_len);
@@ -2634,9 +2629,7 @@ srv_purge_coordinator_suspend(
 
 	do {
 		rw_lock_x_lock(&purge_sys.latch);
-
-		purge_sys.running = false;
-
+		purge_sys.set_running(false);
 		rw_lock_x_unlock(&purge_sys.latch);
 
 		/* We don't wait right away on the the non-timed wait because
@@ -2652,11 +2645,11 @@ srv_purge_coordinator_suspend(
 		rw_lock_x_lock(&purge_sys.latch);
 
 		stop = (srv_shutdown_state == SRV_SHUTDOWN_NONE
-			&& purge_sys.state == PURGE_STATE_STOP);
+			&& purge_sys.state_latched() == purge_sys_t::STOP);
 
 		if (!stop) {
 			ut_a(purge_sys.n_stop == 0);
-			purge_sys.running = true;
+			purge_sys.set_running(true);
 
 			if (timeout
 			    && rseg_history_len < 5000
@@ -2700,14 +2693,10 @@ DECLARE_THREAD(srv_purge_coordinator_thread)(
 
 	ut_ad(!srv_read_only_mode);
 	ut_a(srv_n_purge_threads >= 1);
-	ut_a(trx_purge_state() == PURGE_STATE_INIT);
 	ut_a(srv_force_recovery < SRV_FORCE_NO_BACKGROUND);
 
 	rw_lock_x_lock(&purge_sys.latch);
-
-	purge_sys.running = true;
-	purge_sys.state = PURGE_STATE_RUN;
-
+	purge_sys.coordinator_startup();
 	rw_lock_x_unlock(&purge_sys.latch);
 
 #ifdef UNIV_PFS_THREAD
@@ -2730,7 +2719,7 @@ DECLARE_THREAD(srv_purge_coordinator_thread)(
 		if (srv_shutdown_state == SRV_SHUTDOWN_NONE
 		    && srv_undo_sources
 		    && (n_total_purged == 0
-			|| purge_sys.state == PURGE_STATE_STOP)) {
+			|| purge_sys.state() == purge_sys_t::STOP)) {
 
 			srv_purge_coordinator_suspend(slot, rseg_history_len);
 		}
@@ -2754,16 +2743,13 @@ DECLARE_THREAD(srv_purge_coordinator_thread)(
 
 	/* Note that we are shutting down. */
 	rw_lock_x_lock(&purge_sys.latch);
-
-	purge_sys.state = PURGE_STATE_EXIT;
+	purge_sys.coordinator_shutdown();
 
 	/* If there are any pending undo-tablespace truncate then clear
 	it off as we plan to shutdown the purge thread. */
 	purge_sys.undo_trunc.clear();
 
-	purge_sys.running = false;
-
-	/* Ensure that the wait in trx_purge_stop() will terminate. */
+	/* Ensure that the wait in purge_sys_t::stop() will terminate. */
 	os_event_set(purge_sys.event);
 
 	rw_lock_x_unlock(&purge_sys.latch);

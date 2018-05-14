@@ -2015,7 +2015,7 @@ row_merge_read_clustered_index(
 					hope that the purge batch will
 					complete before we execute
 					btr_pcur_restore_position(). */
-					trx_purge_run();
+					srv_purge_wakeup();
 					os_thread_sleep(1000000);
 				}
 
